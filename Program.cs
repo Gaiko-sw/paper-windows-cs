@@ -24,6 +24,9 @@ public static partial class Win32
 	[LibraryImport("user32.dll")]
 	public static partial int MoveWindow(IntPtr hwnd, int x, int y, int nwidth, int nheight, int bRepaint = 1);
 	[LibraryImport("user32.dll")]
+	// todo marshall this IntPtr? return type. dunno what happens if it's null
+	public static partial IntPtr SetActiveWindow(IntPtr hwnd);
+	[LibraryImport("user32.dll")]
 	public static partial nint GetActiveWindow();
 	[LibraryImport("user32.dll")]
 	public static partial int GetWindowRect(IntPtr hWnd, out Rect lpRect);
@@ -105,6 +108,26 @@ public partial class ShellHookWindow : Form
 					if (m.LParam == this.Handle) {return;}
 					wm_.NewWindow(m.LParam);
 					break;
+				case Win32.Msg.Destroy:
+					Console.WriteLine($"Msg.Destroy. Win ID: {m.LParam}");
+					wm_.RemoveWindow(m.LParam);
+					break;
+				case Win32.Msg.Move:
+					Console.WriteLine($"Msg.Move. Win ID: {m.LParam}");
+					wm_.RemoveWindow(m.LParam);
+					break;
+				case Win32.Msg.Size:
+					Console.WriteLine($"Msg.Size. Win ID: {m.LParam}");
+					break;
+				case Win32.Msg.Killfocus:
+					Console.WriteLine($"Msg.Killfocus. Win ID: {m.LParam}");
+					break;
+				case Win32.Msg.Activate:
+				case Win32.Msg.Setfocus:
+				case Win32.Msg.Focus:
+					Console.WriteLine($"Msg.Focus. Win ID: {m.LParam}");
+					wm_.FocusWindow(m.LParam);
+					break;
 				default:
 					// Console.WriteLine($"Unhandled message {m.WParam}");
 					break;
@@ -129,11 +152,27 @@ public struct Rect {
 public class WindowManager {
 	private List<Window> windows_ = new();
 	private int focusedWindowIndex_ = -1;
+	private int startX_ = 0;
 
 	private int getScreenHeight => Screen.PrimaryScreen.Bounds.Height;
+	private int getScreenWidth => Screen.PrimaryScreen.Bounds.Width;
 
 	public WindowManager() {
 
+	}
+
+	public bool IsWindowManaged(IntPtr hwnd) {
+		return windows_.Any(w => w.hwnd == hwnd);
+	}
+
+	public int? GetWindowIndex(IntPtr hwnd) {
+		foreach (var (win, i) in windows_.Select((win, i) => (win, i)))
+		{
+			if (win.hwnd == hwnd) {
+				return i;
+			}
+		}
+		return null;
 	}
 
 	public void NewWindow(IntPtr? hwnd)
@@ -174,8 +213,80 @@ public class WindowManager {
 		// ScrollWindowOnScreen();
 	}
 
-	public void ReflowWindows(int startX = 0) {
-		var currentX = startX;
+	public void RemoveWindow(IntPtr hwnd)
+	{
+		Console.WriteLine("RemoveWindow");
+		foreach (var (win, i) in windows_.Select((w, i) => (w, i)))
+		{
+			if (win.hwnd == hwnd)
+			{
+				if (i == focusedWindowIndex_)
+				{
+					focusedWindowIndex_--;
+				}
+				windows_.RemoveAt(i);
+				Console.WriteLine($"Remove found window. Reflowing");
+				ReflowWindows();
+				break;
+			}
+		}
+	}
+
+	public void FocusWindow(IntPtr hwnd) {
+		var i = GetWindowIndex(hwnd);
+		if (i == null) { return; }
+		int index = i.Value;
+		FocusWindowAtIndex(index);
+	}
+
+	public void FocusWindowAtIndex(int index) {
+		Win32.SetActiveWindow(windows_[index].hwnd);
+		// todo replace scrolls with a DoOptionScroll() which can do other things
+		ScrollWindowOnScreen(index);
+	}
+
+	public void FocusNext(){
+		Console.WriteLine("FocusNext");
+
+		if (focusedWindowIndex_ == 0) {
+			if (windows_.Count > 0) {
+				FocusWindowAtIndex(0);
+			}
+		}
+		else if (focusedWindowIndex_ < windows_.Count) {
+			FocusWindowAtIndex(focusedWindowIndex_ + 1);
+		}
+		else {
+			FocusWindowAtIndex(focusedWindowIndex_);
+		}
+	}
+
+	public void FocusPrev(){
+		Console.WriteLine("FocusPrev");
+
+
+		if (focusedWindowIndex_ == 0) {
+			if (windows_.Count > 0) {
+				FocusWindowAtIndex(windows_.Count);
+			}
+		}
+		else if (focusedWindowIndex_ > 1) {
+			FocusWindowAtIndex(focusedWindowIndex_ - 1);
+		}
+		else {
+			FocusWindowAtIndex(focusedWindowIndex_);
+		}
+	}
+
+	/// <summary>
+	/// Moves windows. Sets window manager's startX if provided
+	/// </summary>
+	/// <param name="newStartX"></param>
+	public void ReflowWindows(int? newStartX = null) {
+		if (newStartX != null) {
+			startX_ = newStartX.Value;
+		}
+		var currentX = startX_;
 		foreach (var window in windows_) {
 			var r = Win32.GetWindowRect(window.hwnd);
 			if (r == null) {
@@ -188,22 +299,71 @@ public class WindowManager {
 		}
 	}
 
-	public void FocusWindowAtIndex(int index) {
-
+	public void Scroll(int amount) {
+		Console.WriteLine("Scroll");
+		startX_ = startX_ + amount;
+		ReflowWindows();
 	}
 
-	public void RemoveWindow(IntPtr hwnd) {
-		foreach (var (win, i) in windows_.Select((w, i) => (w, i))) {
-			if (win.hwnd == hwnd) {
-				if (i == focusedWindowIndex_) {
-					focusedWindowIndex_--;
-				}
-				windows_.RemoveAt(i);
-				Console.WriteLine($"Remove found window. Reflowing");
-				ReflowWindows();
+	public void ScrollWindowOnScreen(int? index) {
+		if (index == null) {
+			index = focusedWindowIndex_;
+		}
+		int i = index.Value;
+		var hwnd = windows_[i].hwnd;
+
+		var r = Win32.GetWindowRect(hwnd);
+		if (r == null) { return; }
+		Rect rect = r.Value;
+
+		if (rect.Left < 0) {
+			PlaceWindow(i, 0);
+		}
+		else if (rect.Right > getScreenWidth) {
+			PlaceWindow(i, getScreenWidth - rect.Width);
+		}
+	}
+
+	private int getPriorWidth(int index) {
+		int prior_width = 0;
+		foreach (var (win, i) in windows_.Select((win, i) => (win, i)))
+		{
+			if (i == focusedWindowIndex_)
+			{
 				break;
 			}
+			var r = Win32.GetWindowRect(win.hwnd);
+			if (r == null)
+			{
+				// todo remove that window?
+				// return;
+			}
+			Rect rect = r.Value;
+			prior_width += rect.Width;
 		}
+		return prior_width;
+	}
+
+	public void PlaceWindow(int index, int newWindowX) {
+		var prior_width = getPriorWidth(index);
+		ReflowWindows(-prior_width + newWindowX);
+	}
+
+	public void CentreCurrentWindow() {
+		var hwnd = Win32.GetActiveWindow();
+		var r = Win32.GetWindowRect(hwnd);
+		if (r == null) {
+			// todo remove window, focus other?
+			// todo also check if the current window is managed
+			return;
+		}
+		Rect rect = r.Value;
+		var centring_width = getScreenWidth / 2;
+		centring_width -= rect.Width / 2;
+
+		var i = GetWindowIndex(hwnd);
+		var prior_width = getPriorWidth(i.Value);
+		ReflowWindows(centring_width - prior_width);
 	}
 }
 
