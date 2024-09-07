@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Drawing.Imaging;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -6,10 +7,11 @@ using Microsoft.Win32;
 
 public static partial class Win32
 {
+	// todo fix marshalling bool returns. 
 	[LibraryImport("user32.dll", EntryPoint = "MessageBoxW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
 	public static partial int MessageBox(IntPtr hWnd, string lpText, string lpCaption, uint uType);
 
-	// Register
+	// Shell Registering
 	[LibraryImport("user32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
 	public static partial int RegisterShellHookWindow(IntPtr hwnd);
 	[LibraryImport("user32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
@@ -37,6 +39,12 @@ public static partial class Win32
 		return success == 1 ? ret : null;
 	}
 
+	// Keyboard
+	[LibraryImport("user32.dll")]
+	private static partial int RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+	[LibraryImport("user32.dll")]
+	private static partial int UnregisterHotKey(IntPtr hWnd, int id);
+
 	public enum Msg {
 		Create = 1,
 		Destroy = 2,
@@ -46,6 +54,8 @@ public static partial class Win32
 		Setfocus = 7,
 		Killfocus = 8,
 		Focus = 32772,
+
+		Hotkey = 0x0312,
 	}
 
 }
@@ -133,10 +143,13 @@ public partial class ShellHookWindow : Form
 					break;
 			}
 		}
+		else if (m.Msg == 0x0312) {
+
+		}
 		base.WndProc(ref m);
 	}
-
 }
+
 
 public struct Window {
 	public IntPtr hwnd;
@@ -175,7 +188,7 @@ public class WindowManager {
 		return null;
 	}
 
-	public void NewWindow(IntPtr? hwnd)
+	public void NewWindow(IntPtr? hwnd = null)
 	{
 		if (hwnd == null) {
 			hwnd = Win32.GetActiveWindow();
@@ -240,6 +253,7 @@ public class WindowManager {
 	}
 
 	public void FocusWindowAtIndex(int index) {
+		focusedWindowIndex_ = index;
 		Win32.SetActiveWindow(windows_[index].hwnd);
 		// todo replace scrolls with a DoOptionScroll() which can do other things
 		ScrollWindowOnScreen(index);
@@ -248,11 +262,14 @@ public class WindowManager {
 	public void FocusNext(){
 		Console.WriteLine("FocusNext");
 
-		if (focusedWindowIndex_ == 0) {
-			if (windows_.Count > 0) {
-				FocusWindowAtIndex(0);
+		if (focusedWindowIndex_ == -1)
+		{
+			if (windows_.Count > 0)
+			{
+				FocusWindowAtIndex(windows_.Count - 1);
 			}
 		}
+		
 		else if (focusedWindowIndex_ < windows_.Count) {
 			FocusWindowAtIndex(focusedWindowIndex_ + 1);
 		}
@@ -265,12 +282,14 @@ public class WindowManager {
 		Console.WriteLine("FocusPrev");
 
 
-		if (focusedWindowIndex_ == 0) {
-			if (windows_.Count > 0) {
-				FocusWindowAtIndex(windows_.Count);
+		if (focusedWindowIndex_ == -1)
+		{
+			if (windows_.Count > 0)
+			{
+				FocusWindowAtIndex(0);
 			}
 		}
-		else if (focusedWindowIndex_ > 1) {
+		else if (focusedWindowIndex_ > 0) {
 			FocusWindowAtIndex(focusedWindowIndex_ - 1);
 		}
 		else {
@@ -367,15 +386,56 @@ public class WindowManager {
 	}
 }
 
+public class KeyboardManager {
+	private KeyboardHook hook;
+	private WindowManager wm;
+
+	public KeyboardManager(WindowManager wm) {
+		this.wm = wm;
+		hook = new KeyboardHook(true);
+		hook.KeyDown += On_KeyDown;
+	}
+
+	private void On_KeyDown(Keys key, bool shift, bool ctrl, bool alt)
+    {
+        Console.WriteLine($"{key}, {shift}, {ctrl}, {alt}");
+		if (alt) {
+			switch (key) {
+			case Keys.Insert:
+				wm.NewWindow();
+				break;
+			case Keys.Home:
+				wm.Scroll(-300);
+				break;
+			case Keys.PageUp:
+				wm.CentreCurrentWindow();
+				break;
+			case Keys.Delete:
+				wm.FocusPrev();
+				break;
+			case Keys.End:
+				wm.Scroll(300);
+				break;
+			case Keys.PageDown:
+				wm.FocusNext();
+				break;
+			}
+		}
+    }
+}
+
 static class Program {
+
 	[STAThread]
 	public static void Main(string[] args)
 	{
-		// Invoke the function as a regular managed method.
-		// Win32.MessageBox(IntPtr.Zero, "Command-line message box", "Attention!", 0);
-
 		var wm = new WindowManager();
+		var keyboard = new KeyboardManager(wm);
 		// ApplicationConfiguration.Initialize();
 		Application.Run(new ShellHookWindow(wm));
 	}
+}
+
+internal class WinodwManager
+{
 }
